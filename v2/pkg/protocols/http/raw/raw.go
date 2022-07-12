@@ -117,6 +117,10 @@ read_line:
 		rawRequest.Path = parts[1]
 	}
 
+	if len(parsedURL.Path) > 0 && !strings.HasSuffix(parsedURL.Path,"/") && rawRequest.Path == "/" {
+		rawRequest.Path = ""
+	}
+
 	hostURL := parsedURL.Host
 	if strings.HasSuffix(parsedURL.Path, "/") && strings.HasPrefix(rawRequest.Path, "/") {
 		parsedURL.Path = strings.TrimSuffix(parsedURL.Path, "/")
