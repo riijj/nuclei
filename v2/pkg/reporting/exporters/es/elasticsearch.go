@@ -6,8 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/corpix/uarand"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"time"
 
@@ -20,10 +20,12 @@ import (
 
 // Options contains necessary options required for elasticsearch communication
 type Options struct {
+	// Host is the hostname of the elasticsearch instance
+	Host string `yaml:"host" validate:"required_without=IP"`
 	// IP for elasticsearch instance
-	IP string `yaml:"ip"  validate:"required,ip"`
+	IP string `yaml:"ip" validate:"required,ip"`
 	// Port is the port of elasticsearch instance
-	Port int `yaml:"port"  validate:"required,gte=0,lte=65535"`
+	Port int `yaml:"port" validate:"gte=0,lte=65535"`
 	// SSL (optional) enables ssl for elasticsearch connection
 	SSL bool `yaml:"ssl"`
 	// SSLVerification (optional) disables SSL verification for elasticsearch
@@ -33,8 +35,9 @@ type Options struct {
 	// Password is the password for elasticsearch instance
 	Password string `yaml:"password"  validate:"required"`
 	// IndexName is the name of the elasticsearch index
-	IndexName  string `yaml:"index-name"  validate:"required"`
-	HttpClient *retryablehttp.Client
+	IndexName string `yaml:"index-name"  validate:"required"`
+
+	HttpClient *retryablehttp.Client `yaml:"-"`
 }
 
 type data struct {
@@ -81,7 +84,16 @@ func New(option *Options) (*Exporter, error) {
 		auth = "Basic " + auth
 		authentication = auth
 	}
-	url := fmt.Sprintf("%s%s:%d/%s/_doc", scheme, option.IP, option.Port, option.IndexName)
+	var addr string
+	if option.Host != "" {
+		addr = option.Host
+	} else {
+		addr = option.IP
+	}
+	if option.Port != 0 {
+		addr += fmt.Sprintf(":%d", option.Port)
+	}
+	url := fmt.Sprintf("%s%s/%s/_doc", scheme, addr, option.IndexName)
 
 	ei = &Exporter{
 		url:            url,
@@ -101,6 +113,7 @@ func (exporter *Exporter) Export(event *output.ResultEvent) error {
 	if len(exporter.authentication) > 0 {
 		req.Header.Add("Authorization", exporter.authentication)
 	}
+	req.Header.Set("User-Agent", uarand.GetRandom())
 	req.Header.Add("Content-Type", "application/json")
 
 	d := data{
@@ -111,7 +124,7 @@ func (exporter *Exporter) Export(event *output.ResultEvent) error {
 	if err != nil {
 		return err
 	}
-	req.Body = ioutil.NopCloser(bytes.NewReader(b))
+	req.Body = io.NopCloser(bytes.NewReader(b))
 
 	res, err := exporter.elasticsearch.Do(req)
 	if err != nil {

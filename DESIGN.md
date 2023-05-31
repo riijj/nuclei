@@ -189,7 +189,7 @@ Polling for interactions and server registration only starts when a template use
 
 Next we arrive in the `RunEnumeration` function of the runner.
 
-`HostErrorsCache` is initialised which is used throughout the run of Nuclei enumeration to keep track of errors per host and skip further requests if the errors are greater than the provided threshold. The functionality for the error tracking cache is defined in [hosterrorscache.go](https://github.com/projectdiscovery/nuclei/blob/master/v2/pkg/protocols/common/hosterrorscache/hosterrorscache.go) and is pretty simplistic in nature.
+`HostErrorsCache` is initialised which is used throughout the run of Nuclei enumeration to keep track of errors per host and skip further requests if the errors are greater than the provided threshold. The functionality for the error tracking cache is defined in [hosterrorscache.go](https://github.com/projectdiscovery/nuclei/blob/main/v2/pkg/protocols/common/hosterrorscache/hosterrorscache.go) and is pretty simplistic in nature.
 
 Next the `WorkflowLoader` is initialised which used to load workflows. It exists in `v2/pkg/parsers/workflow_loader.go`
 
@@ -259,106 +259,6 @@ An example of using the core engine is provided below.
 engine := core.New(r.options)
 engine.SetExecuterOptions(executerOpts)
 results := engine.ExecuteWithOpts(finalTemplates, r.hmapInputProvider, true)
-```
-
-### Using Nuclei From Go Code
-
-An example of using Nuclei From Go Code to run templates on targets is provided below.
-
-```go
-package main
-
-import (
-	"fmt"
-	"log"
-	"os"
-	"path"
-
-	"github.com/logrusorgru/aurora"
-	"go.uber.org/ratelimit"
-
-	"github.com/projectdiscovery/goflags"
-	"github.com/projectdiscovery/nuclei/v2/pkg/catalog"
-	"github.com/projectdiscovery/nuclei/v2/pkg/catalog/config"
-	"github.com/projectdiscovery/nuclei/v2/pkg/catalog/loader"
-	"github.com/projectdiscovery/nuclei/v2/pkg/core"
-	"github.com/projectdiscovery/nuclei/v2/pkg/core/inputs"
-	"github.com/projectdiscovery/nuclei/v2/pkg/output"
-	"github.com/projectdiscovery/nuclei/v2/pkg/parsers"
-	"github.com/projectdiscovery/nuclei/v2/pkg/protocols"
-	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/hosterrorscache"
-	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/interactsh"
-	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/protocolinit"
-	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/protocolstate"
-	"github.com/projectdiscovery/nuclei/v2/pkg/reporting"
-	"github.com/projectdiscovery/nuclei/v2/pkg/testutils"
-	"github.com/projectdiscovery/nuclei/v2/pkg/types"
-)
-
-func main() {
-	cache := hosterrorscache.New(30, hosterrorscache.DefaultMaxHostsCount)
-	defer cache.Close()
-
-	mockProgress := &testutils.MockProgressClient{}
-	reportingClient, _ := reporting.New(&reporting.Options{}, "")
-	defer reportingClient.Close()
-
-	outputWriter := testutils.NewMockOutputWriter()
-	outputWriter.WriteCallback = func(event *output.ResultEvent) {
-		fmt.Printf("Got Result: %v\n", event)
-	}
-
-	defaultOpts := types.DefaultOptions()
-	protocolstate.Init(defaultOpts)
-	protocolinit.Init(defaultOpts)
-
-	defaultOpts.Templates = goflags.FileOriginalNormalizedStringSlice{"dns/cname-service-detection.yaml"}
-	defaultOpts.ExcludeTags = config.ReadIgnoreFile().Tags
-
-	interactOpts := interactsh.NewDefaultOptions(outputWriter, reportingClient, mockProgress)
-	interactClient, err := interactsh.New(interactOpts)
-	if err != nil {
-		log.Fatalf("Could not create interact client: %s\n", err)
-	}
-	defer interactClient.Close()
-
-	home, _ := os.UserHomeDir()
-	catalog := catalog.New(path.Join(home, "nuclei-templates"))
-	executerOpts := protocols.ExecuterOptions{
-		Output:          outputWriter,
-		Options:         defaultOpts,
-		Progress:        mockProgress,
-		Catalog:         catalog,
-		IssuesClient:    reportingClient,
-		RateLimiter:     ratelimit.New(150),
-		Interactsh:      interactClient,
-		HostErrorsCache: cache,
-		Colorizer:       aurora.NewAurora(true),
-		ResumeCfg:       types.NewResumeCfg(),
-	}
-	engine := core.New(defaultOpts)
-	engine.SetExecuterOptions(executerOpts)
-
-	workflowLoader, err := parsers.NewLoader(&executerOpts)
-	if err != nil {
-		log.Fatalf("Could not create workflow loader: %s\n", err)
-	}
-	executerOpts.WorkflowLoader = workflowLoader
-
-	configObject, err := config.ReadConfiguration()
-	if err != nil {
-		log.Fatalf("Could not read config: %s\n", err)
-	}
-	store, err := loader.New(loader.NewConfig(defaultOpts, configObject, catalog, executerOpts))
-	if err != nil {
-		log.Fatalf("Could not create loader client: %s\n", err)
-	}
-	store.Load()
-
-	input := &inputs.SimpleInputProvider{Inputs: []string{"docs.hackerone.com"}}
-	_ = engine.Execute(store.Templates(), input)
-	engine.WorkPool().Wait() // Wait for the scan to finish
-}
 ```
 
 ### Adding a New Protocol
@@ -555,6 +455,27 @@ func (template *Template) compileProtocolRequests(options protocols.ExecuterOpti
 ```
 
 That's it, you've added a new protocol to Nuclei. The next good step would be to write integration tests which are described in `integration-tests` and `cmd/integration-tests` directories.
+
+
+## Profiling Instructions
+
+To enable dumping of Memory profiling data, `-profile-mem` flag can be used along with path to a file. This writes a pprof formatted file which can be used for investigate resource usage with `pprof` tool.
+
+```console
+$ nuclei -t nuclei-templates/ -u https://example.com -profile-mem mem.pprof
+```
+
+To view profile data in pprof, first install pprof. Then run the below command -
+
+```console
+$ go tool pprof mem.pprof
+```
+
+To open a web UI on a port to visualize debug data, the below command can be used.
+
+```console
+$ go tool pprof -http=:8081 mem.pprof
+```
 
 ## Project Structure
 

@@ -43,11 +43,12 @@ func TestResponseToDSLMap(t *testing.T) {
 
 	resp := new(dns.Msg)
 	resp.Rcode = dns.RcodeSuccess
-	resp.Answer = append(resp.Answer, &dns.A{A: net.ParseIP("1.1.1.1"), Hdr: dns.RR_Header{Name: "one.one.one.one."}})
+	resp.Answer = append(resp.Answer, &dns.A{A: net.ParseIP("1.1.1.1"), Hdr: dns.RR_Header{Name: "one.one.one.one.", Rrtype: dns.TypeA}}, &dns.A{A: net.ParseIP("2.2.2.2"), Hdr: dns.RR_Header{Name: "one.one.one.one.", Rrtype: dns.TypeA}}, &dns.A{A: net.ParseIP("3.3.3.3"), Hdr: dns.RR_Header{Name: "one.one.one.one.", Rrtype: dns.TypeA}})
 
 	event := request.responseToDSLMap(req, resp, "one.one.one.one", "one.one.one.one", nil)
-	require.Len(t, event, 14, "could not get correct number of items in dsl map")
+	require.Len(t, event, 15, "could not get correct number of items in dsl map")
 	require.Equal(t, dns.RcodeSuccess, event["rcode"], "could not get correct rcode")
+	require.ElementsMatch(t, []string{net.ParseIP("1.1.1.1").String(), net.ParseIP("2.2.2.2").String(), net.ParseIP("3.3.3.3").String()}, event["a"], "could not get correct a record")
 }
 
 func TestDNSOperatorMatch(t *testing.T) {
@@ -226,6 +227,10 @@ func TestDNSMakeResult(t *testing.T) {
 	recursion := false
 	testutils.Init(options)
 	templateID := "testing-dns"
+	executerOpts := testutils.NewMockExecuterOptions(options, &testutils.TemplateInfo{
+		ID:   templateID,
+		Info: model.Info{SeverityHolder: severity.Holder{Severity: severity.Low}, Name: "test"},
+	})
 	request := &Request{
 		RequestType: DNSRequestTypeHolder{DNSRequestType: A},
 		Class:       "INET",
@@ -246,11 +251,8 @@ func TestDNSMakeResult(t *testing.T) {
 				Regex: []string{"[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+"},
 			}},
 		},
+		options: executerOpts,
 	}
-	executerOpts := testutils.NewMockExecuterOptions(options, &testutils.TemplateInfo{
-		ID:   templateID,
-		Info: model.Info{SeverityHolder: severity.Holder{Severity: severity.Low}, Name: "test"},
-	})
 	err := request.Compile(executerOpts)
 	require.Nil(t, err, "could not compile dns request")
 

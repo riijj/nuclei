@@ -5,7 +5,6 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httputil"
 	"strings"
@@ -16,7 +15,7 @@ import (
 
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/generators"
 	"github.com/projectdiscovery/rawhttp"
-	"github.com/projectdiscovery/stringsutil"
+	stringsutil "github.com/projectdiscovery/utils/strings"
 )
 
 type redirectedResponse struct {
@@ -115,35 +114,10 @@ func normalizeResponseBody(resp *http.Response, response *redirectedResponse) er
 // dump creates a dump of the http request in form of a byte slice
 func dump(req *generatedRequest, reqURL string) ([]byte, error) {
 	if req.request != nil {
-		// Create a copy on the fly of the request body - ignore errors
-		bodyBytes, _ := req.request.BodyBytes()
-		var dumpBody bool
-		if len(bodyBytes) > 0 {
-			dumpBody = true
-			req.request.Request.ContentLength = int64(len(bodyBytes))
-			req.request.Request.Body = ioutil.NopCloser(bytes.NewReader(bodyBytes))
-		} else {
-			req.request.Request.ContentLength = 0
-			req.request.Request.Body = nil
-			delete(req.request.Request.Header, "Content-length")
-		}
-
-		dumpBytes, err := httputil.DumpRequestOut(req.request.Request, dumpBody)
-		if err != nil {
-			return nil, err
-		}
-
-		// The original req.Body gets modified indirectly by httputil.DumpRequestOut so we set it again to nil if it was empty
-		// Otherwise redirects like 307/308 would fail (as they require the body to be sent along)
-		if len(bodyBytes) == 0 {
-			req.request.Request.ContentLength = 0
-			req.request.Request.Body = nil
-		}
-
-		return dumpBytes, nil
+		return req.request.Dump()
 	}
 	rawHttpOptions := &rawhttp.Options{CustomHeaders: req.rawRequest.UnsafeHeaders, CustomRawBytes: req.rawRequest.UnsafeRawBytes}
-	return rawhttp.DumpRequestRaw(req.rawRequest.Method, reqURL, req.rawRequest.Path, generators.ExpandMapValues(req.rawRequest.Headers), ioutil.NopCloser(strings.NewReader(req.rawRequest.Data)), rawHttpOptions)
+	return rawhttp.DumpRequestRaw(req.rawRequest.Method, reqURL, req.rawRequest.Path, generators.ExpandMapValues(req.rawRequest.Headers), io.NopCloser(strings.NewReader(req.rawRequest.Data)), rawHttpOptions)
 }
 
 // handleDecompression if the user specified a custom encoding (as golang transport doesn't do this automatically)

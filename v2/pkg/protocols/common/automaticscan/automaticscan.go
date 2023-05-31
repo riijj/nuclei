@@ -2,7 +2,6 @@ package automaticscan
 
 import (
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,10 +14,12 @@ import (
 	"github.com/projectdiscovery/nuclei/v2/pkg/catalog/loader"
 	"github.com/projectdiscovery/nuclei/v2/pkg/core"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols"
+	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/contextargs"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/http/httpclientpool"
 	"github.com/projectdiscovery/nuclei/v2/pkg/templates"
 	"github.com/projectdiscovery/nuclei/v2/pkg/templates/types"
 	"github.com/projectdiscovery/retryablehttp-go"
+	sliceutil "github.com/projectdiscovery/utils/slice"
 	wappalyzer "github.com/projectdiscovery/wappalyzergo"
 	"gopkg.in/yaml.v2"
 )
@@ -56,7 +57,7 @@ func New(opts Options) (*Service, error) {
 	}
 
 	var mappingData map[string]string
-	config, err := config.ReadConfiguration()
+	config := config.DefaultConfig
 	if err == nil {
 		mappingFile := filepath.Join(config.TemplatesDirectory, mappingFilename)
 		if file, err := os.Open(mappingFile); err == nil {
@@ -132,20 +133,22 @@ func (s *Service) executeWappalyzerTechDetection() error {
 	// Iterate through each target making http request and identifying fingerprints
 	inputPool := s.engine.WorkPool().InputPool(types.HTTPProtocol)
 
-	s.target.Scan(func(value string) {
+	s.target.Scan(func(value *contextargs.MetaInput) bool {
 		inputPool.WaitGroup.Add()
 
-		go func(input string) {
+		go func(input *contextargs.MetaInput) {
 			defer inputPool.WaitGroup.Done()
+
 			s.processWappalyzerInputPair(input)
 		}(value)
+		return true
 	})
 	inputPool.WaitGroup.Wait()
 	return nil
 }
 
-func (s *Service) processWappalyzerInputPair(input string) {
-	req, err := retryablehttp.NewRequest(http.MethodGet, input, nil)
+func (s *Service) processWappalyzerInputPair(input *contextargs.MetaInput) {
+	req, err := retryablehttp.NewRequest(http.MethodGet, input.Input, nil)
 	if err != nil {
 		return
 	}
@@ -159,7 +162,7 @@ func (s *Service) processWappalyzerInputPair(input string) {
 		return
 	}
 	reader := io.LimitReader(resp.Body, maxDefaultBody)
-	data, err := ioutil.ReadAll(reader)
+	data, err := io.ReadAll(reader)
 	if err != nil {
 		resp.Body.Close()
 		return
@@ -196,7 +199,7 @@ func (s *Service) processWappalyzerInputPair(input string) {
 	if len(items) == 0 {
 		return
 	}
-	uniqueTags := uniqueSlice(items)
+	uniqueTags := sliceutil.Dedupe(items)
 
 	templatesList := s.store.LoadTemplatesWithTags(s.allTemplates, uniqueTags)
 	gologger.Info().Msgf("Executing tags (%v) for host %s (%d templates)", strings.Join(uniqueTags, ","), input, len(templatesList))
@@ -220,18 +223,4 @@ func normalizeAppName(appName string) string {
 		}
 	}
 	return strings.ToLower(appName)
-}
-
-func uniqueSlice(slice []string) []string {
-	data := make(map[string]struct{}, len(slice))
-	for _, item := range slice {
-		if _, ok := data[item]; !ok {
-			data[item] = struct{}{}
-		}
-	}
-	finalSlice := make([]string, 0, len(data))
-	for item := range data {
-		finalSlice = append(finalSlice, item)
-	}
-	return finalSlice
 }

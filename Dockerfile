@@ -1,7 +1,16 @@
-FROM golang:1.18.3-alpine as build-env
-RUN go install -v github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest
+# Build
+FROM golang:1.20.4-alpine AS build-env
+RUN apk add build-base
+WORKDIR /app
+COPY . /app
+WORKDIR /app/v2
+RUN go mod download
+RUN go build ./cmd/nuclei
 
-FROM alpine:3.16.0
-RUN apk add --no-cache bind-tools ca-certificates chromium
-COPY --from=build-env /go/bin/nuclei /usr/local/bin/nuclei
+# Release
+FROM alpine:3.18.0
+RUN apk -U upgrade --no-cache \
+    && apk add --no-cache bind-tools chromium ca-certificates
+COPY --from=build-env /app/v2/nuclei /usr/local/bin/
+
 ENTRYPOINT ["nuclei"]

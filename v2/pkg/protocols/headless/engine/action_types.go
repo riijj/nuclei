@@ -124,7 +124,7 @@ var ActionToActionString = map[ActionType]string{
 	ActionWaitLoad:     "waitload",
 	ActionGetResource:  "getresource",
 	ActionExtract:      "extract",
-	ActionSetMethod:    "set-method",
+	ActionSetMethod:    "setmethod",
 	ActionAddHeader:    "addheader",
 	ActionSetHeader:    "setheader",
 	ActionDeleteHeader: "deleteheader",
@@ -190,6 +190,20 @@ func (holder *ActionTypeHolder) UnmarshalYAML(unmarshal func(interface{}) error)
 	}
 
 	computedType, err := toActionTypes(marshalledTypes)
+	if err != nil {
+		return err
+	}
+
+	holder.ActionType = computedType
+	return nil
+}
+
+func (holder *ActionTypeHolder) UnmarshalJSON(data []byte) error {
+	s := strings.Trim(string(data), `"`)
+	if s == "" {
+		return nil
+	}
+	computedType, err := toActionTypes(s)
 	if err != nil {
 		return err
 	}

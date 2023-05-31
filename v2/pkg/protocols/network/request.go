@@ -12,17 +12,21 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"golang.org/x/exp/maps"
 
 	"github.com/projectdiscovery/gologger"
 	"github.com/projectdiscovery/nuclei/v2/pkg/operators"
 	"github.com/projectdiscovery/nuclei/v2/pkg/output"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols"
+	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/contextargs"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/expressions"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/generators"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/helpers/eventcreator"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/helpers/responsehighlighter"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/interactsh"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/replacer"
+	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/utils/vardump"
+	protocolutils "github.com/projectdiscovery/nuclei/v2/pkg/protocols/utils"
 	templateTypes "github.com/projectdiscovery/nuclei/v2/pkg/templates/types"
 )
 
@@ -34,28 +38,28 @@ func (request *Request) Type() templateTypes.ProtocolType {
 }
 
 // ExecuteWithResults executes the protocol requests and returns results instead of writing them.
-func (request *Request) ExecuteWithResults(input string, metadata /*TODO review unused parameter*/, previous output.InternalEvent, callback protocols.OutputEventCallback) error {
+func (request *Request) ExecuteWithResults(input *contextargs.Context, metadata, previous output.InternalEvent, callback protocols.OutputEventCallback) error {
 	var address string
 	var err error
 
 	if request.SelfContained {
 		address = ""
 	} else {
-		address, err = getAddress(input)
+		address, err = getAddress(input.MetaInput.Input)
 	}
 	if err != nil {
-		request.options.Output.Request(request.options.TemplatePath, input, request.Type().String(), err)
+		request.options.Output.Request(request.options.TemplatePath, input.MetaInput.Input, request.Type().String(), err)
 		request.options.Progress.IncrementFailedRequestsBy(1)
 		return errors.Wrap(err, "could not get address from url")
 	}
+	variables := protocolutils.GenerateVariables(address, false, nil)
+	variablesMap := request.options.Variables.Evaluate(variables)
+	variables = generators.MergeMaps(variablesMap, variables, request.options.Constants)
 
 	for _, kv := range request.addresses {
-		variables := generateNetworkVariables(address)
-		variablesMap := request.options.Variables.Evaluate(generators.MergeMaps(variables, variables))
-		variables = generators.MergeMaps(variablesMap, variables)
 		actualAddress := replacer.Replace(kv.address, variables)
 
-		if err := request.executeAddress(variables, actualAddress, address, input, kv.tls, previous, callback); err != nil {
+		if err := request.executeAddress(variables, actualAddress, address, input.MetaInput.Input, kv.tls, previous, callback); err != nil {
 			gologger.Warning().Msgf("Could not make network request for %s: %s\n", actualAddress, err)
 			continue
 		}
@@ -89,7 +93,7 @@ func (request *Request) executeAddress(variables map[string]interface{}, actualA
 			}
 		}
 	} else {
-		value := generators.CopyMap(payloads)
+		value := maps.Clone(payloads)
 		if err := request.executeRequestWithPayloads(variables, actualAddress, address, input, shouldUseTLS, value, previous, callback); err != nil {
 			return err
 		}
@@ -128,6 +132,10 @@ func (request *Request) executeRequestWithPayloads(variables map[string]interfac
 
 	interimValues := generators.MergeMaps(variables, payloads)
 
+	if vardump.EnableVarDump {
+		gologger.Debug().Msgf("Protocol request variables: \n%s\n", vardump.DumpVariables(interimValues))
+	}
+
 	inputEvents := make(map[string]interface{})
 	for _, input := range request.Inputs {
 		var data []byte
@@ -147,7 +155,7 @@ func (request *Request) executeRequestWithPayloads(variables map[string]interfac
 
 		if request.options.Interactsh != nil {
 			var transformedData string
-			transformedData, interactshURLs = request.options.Interactsh.ReplaceMarkers(string(data), []string{})
+			transformedData, interactshURLs = request.options.Interactsh.Replace(string(data), []string{})
 			data = []byte(transformedData)
 		}
 
@@ -190,14 +198,14 @@ func (request *Request) executeRequestWithPayloads(variables map[string]interfac
 	}
 	request.options.Progress.IncrementRequests()
 
-	if request.options.Options.Debug || request.options.Options.DebugRequests || request.options.Options.StoreResponse{
+	if request.options.Options.Debug || request.options.Options.DebugRequests || request.options.Options.StoreResponse {
 		requestBytes := []byte(reqBuilder.String())
 		msg := fmt.Sprintf("[%s] Dumped Network request for %s\n%s", request.options.TemplateID, actualAddress, hex.Dump(requestBytes))
 		if request.options.Options.Debug || request.options.Options.DebugRequests {
-		gologger.Info().Str("address", actualAddress).Msg(msg)
+			gologger.Info().Str("address", actualAddress).Msg(msg)
 		}
-		if request.options.Options.StoreResponse{
-		request.options.Output.WriteStoreDebugData(address, request.options.TemplateID, request.Type().String(), msg)
+		if request.options.Options.StoreResponse {
+			request.options.Output.WriteStoreDebugData(address, request.options.TemplateID, request.Type().String(), msg)
 		}
 		if request.options.Options.VerboseVerbose {
 			gologger.Print().Msgf("\nCompact HEX view:\n%s", hex.EncodeToString(requestBytes))
@@ -300,15 +308,15 @@ func (request *Request) executeRequestWithPayloads(variables map[string]interfac
 
 func dumpResponse(event *output.InternalWrappedEvent, request *Request, response string, actualAddress, address string) {
 	cliOptions := request.options.Options
-	if cliOptions.Debug || cliOptions.DebugResponse || cliOptions.StoreResponse{
+	if cliOptions.Debug || cliOptions.DebugResponse || cliOptions.StoreResponse {
 		requestBytes := []byte(response)
 		highlightedResponse := responsehighlighter.Highlight(event.OperatorsResult, hex.Dump(requestBytes), cliOptions.NoColor, true)
 		msg := fmt.Sprintf("[%s] Dumped Network response for %s\n\n", request.options.TemplateID, actualAddress)
 		if cliOptions.Debug || cliOptions.DebugResponse {
-		gologger.Debug().Msg(fmt.Sprintf("%s%s", msg, highlightedResponse))
+			gologger.Debug().Msg(fmt.Sprintf("%s%s", msg, highlightedResponse))
 		}
-		if cliOptions.StoreResponse{
-		request.options.Output.WriteStoreDebugData(address, request.options.TemplateID, request.Type().String(), fmt.Sprintf("%s%s", msg, hex.Dump(requestBytes)))
+		if cliOptions.StoreResponse {
+			request.options.Output.WriteStoreDebugData(address, request.options.TemplateID, request.Type().String(), fmt.Sprintf("%s%s", msg, hex.Dump(requestBytes)))
 		}
 		if cliOptions.VerboseVerbose {
 			displayCompactHexView(event, response, cliOptions.NoColor)
@@ -340,19 +348,4 @@ func getAddress(toTest string) (string, error) {
 		toTest = parsed.Host
 	}
 	return toTest, nil
-}
-
-func generateNetworkVariables(input string) map[string]interface{} {
-	if !strings.Contains(input, ":") {
-		return map[string]interface{}{"Hostname": input, "Host": input}
-	}
-	host, port, err := net.SplitHostPort(input)
-	if err != nil {
-		return map[string]interface{}{"Hostname": input}
-	}
-	return map[string]interface{}{
-		"Host":     host,
-		"Port":     port,
-		"Hostname": input,
-	}
 }

@@ -1,7 +1,6 @@
 package file
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,6 +23,7 @@ func TestFindInputPaths(t *testing.T) {
 		NoRecursive: false,
 		Extensions:  []string{"all", ".lock"},
 		DenyList:    []string{".go"},
+		Operators:   newMockOperator(),
 	}
 	executerOpts := testutils.NewMockExecuterOptions(options, &testutils.TemplateInfo{
 		ID:   templateID,
@@ -32,7 +32,7 @@ func TestFindInputPaths(t *testing.T) {
 	err := request.Compile(executerOpts)
 	require.Nil(t, err, "could not compile file request")
 
-	tempDir, err := ioutil.TempDir("", "test-*")
+	tempDir, err := os.MkdirTemp("", "test-*")
 	require.Nil(t, err, "could not create temporary directory")
 	defer os.RemoveAll(tempDir)
 
@@ -44,7 +44,7 @@ func TestFindInputPaths(t *testing.T) {
 		"test.js":           "TEST",
 	}
 	for k, v := range files {
-		err = ioutil.WriteFile(filepath.Join(tempDir, k), []byte(v), os.ModePerm)
+		err = os.WriteFile(filepath.Join(tempDir, k), []byte(v), os.ModePerm)
 		require.Nil(t, err, "could not write temporary file")
 	}
 	expected := []string{"config.yaml", "final.yaml", "test.js"}

@@ -2,59 +2,63 @@ package runner
 
 import (
 	"bufio"
-	"io"
-	"log"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/pkg/errors"
 
 	"github.com/go-playground/validator/v10"
 
-	"github.com/projectdiscovery/fileutil"
 	"github.com/projectdiscovery/goflags"
 	"github.com/projectdiscovery/gologger"
 	"github.com/projectdiscovery/gologger/formatter"
 	"github.com/projectdiscovery/gologger/levels"
 	"github.com/projectdiscovery/nuclei/v2/pkg/catalog/config"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/protocolinit"
+	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/utils/vardump"
+	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/headless/engine"
 	"github.com/projectdiscovery/nuclei/v2/pkg/types"
+	fileutil "github.com/projectdiscovery/utils/file"
+	logutil "github.com/projectdiscovery/utils/log"
+	stringsutil "github.com/projectdiscovery/utils/strings"
 )
 
 func ConfigureOptions() error {
+	// with FileStringSliceOptions, FileNormalizedStringSliceOptions, FileCommaSeparatedStringSliceOptions
+	// if file has extension `.yaml,.json` we consider those as strings and not files to be read
 	isFromFileFunc := func(s string) bool {
-		return !isTemplate(s)
+		return !config.IsTemplate(s)
 	}
-	goflags.DefaultFileNormalizedStringSliceOptions.IsFromFile = isFromFileFunc
-	goflags.DefaultFileOriginalNormalizedStringSliceOptions.IsFromFile = isFromFileFunc
+	goflags.FileNormalizedStringSliceOptions.IsFromFile = isFromFileFunc
+	goflags.FileStringSliceOptions.IsFromFile = isFromFileFunc
+	goflags.FileCommaSeparatedStringSliceOptions.IsFromFile = isFromFileFunc
 	return nil
 }
 
 // ParseOptions parses the command line flags provided by a user
 func ParseOptions(options *types.Options) {
 	// Check if stdin pipe was given
-	options.Stdin = hasStdin()
+	options.Stdin = !options.DisableStdin && fileutil.HasStdin()
+
+	// Read the inputs from env variables that not passed by flag.
+	readEnvInputVars(options)
 
 	// Read the inputs and configure the logging
 	configureOutput(options)
 	// Show the user the banner
 	showBanner()
 
-	if options.TemplatesDirectory != "" && !filepath.IsAbs(options.TemplatesDirectory) {
-		cwd, _ := os.Getwd()
-		options.TemplatesDirectory = filepath.Join(cwd, options.TemplatesDirectory)
+	if options.ShowVarDump {
+		vardump.EnableVarDump = true
 	}
-	if options.Version {
-		gologger.Info().Msgf("Current Version: %s\n", config.Version)
-		os.Exit(0)
-	}
-	if options.TemplatesVersion {
-		configuration, err := config.ReadConfiguration()
-		if err != nil {
-			gologger.Fatal().Msgf("Could not read template configuration: %s\n", err)
+	if options.ShowActions {
+		gologger.Info().Msgf("Showing available headless actions: ")
+		for action := range engine.ActionStringToAction {
+			gologger.Print().Msgf("\t%s", action)
 		}
-		gologger.Info().Msgf("Current nuclei-templates version: %s (%s)\n", configuration.TemplateVersion, configuration.TemplatesDirectory)
 		os.Exit(0)
 	}
 	if options.StoreResponseDir != DefaultDumpTrafficOutputFolder && !options.StoreResponse {
@@ -70,30 +74,22 @@ func ParseOptions(options *types.Options) {
 	// Load the resolvers if user asked for them
 	loadResolvers(options)
 
-	// removes all cli variables containing payloads and add them to the internal struct
-	for key, value := range options.Vars.AsMap() {
-		if fileutil.FileExists(value.(string)) {
-			_ = options.Vars.Del(key)
-			options.AddVarPayload(key, value)
-		}
-	}
-
 	err := protocolinit.Init(options)
 	if err != nil {
 		gologger.Fatal().Msgf("Could not initialize protocols: %s\n", err)
 	}
-}
 
-// hasStdin returns true if we have stdin input
-func hasStdin() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
+	// Set Github token in env variable. runner.getGHClientWithToken() reads token from env
+	if options.GithubToken != "" && os.Getenv("GITHUB_TOKEN") != options.GithubToken {
+		os.Setenv("GITHUB_TOKEN", options.GithubToken)
 	}
-	if fi.Mode()&os.ModeNamedPipe == 0 {
-		return false
+
+	if options.UncoverQuery != nil {
+		options.Uncover = true
+		if len(options.UncoverEngine) == 0 {
+			options.UncoverEngine = append(options.UncoverEngine, "shodan")
+		}
 	}
-	return true
 }
 
 // validateOptions validates the configuration options passed
@@ -112,7 +108,11 @@ func validateOptions(options *types.Options) error {
 	if options.Verbose && options.Silent {
 		return errors.New("both verbose and silent mode specified")
 	}
-	if options.FollowRedirects && options.DisableRedirects {
+
+	if options.FollowHostRedirects && options.FollowRedirects {
+		return errors.New("both follow host redirects and follow redirects specified")
+	}
+	if options.ShouldFollowHTTPRedirects() && options.DisableRedirects {
 		return errors.New("both follow redirects and disable redirects specified")
 	}
 	// loading the proxy server list from file or cli and test the connectivity
@@ -120,8 +120,7 @@ func validateOptions(options *types.Options) error {
 		return err
 	}
 	if options.Validate {
-		options.Headless = true // required for correct validation of headless templates
-		validateTemplatePaths(options.TemplatesDirectory, options.Templates, options.Workflows)
+		validateTemplatePaths(config.DefaultConfig.TemplatesDirectory, options.Templates, options.Workflows)
 	}
 
 	// Verify if any of the client certificate options were set since it requires all three to work properly
@@ -131,8 +130,141 @@ func validateOptions(options *types.Options) error {
 		}
 		validateCertificatePaths([]string{options.ClientCertFile, options.ClientKeyFile, options.ClientCAFile})
 	}
+	// Verify AWS secrets are passed if a S3 template bucket is passed
+	if options.AwsBucketName != "" && options.UpdateTemplates {
+		missing := validateMissingS3Options(options)
+		if missing != nil {
+			return fmt.Errorf("aws s3 bucket details are missing. Please provide %s", strings.Join(missing, ","))
+		}
+	}
 
+	// Verify Azure connection configuration is passed if the Azure template bucket is passed
+	if options.AzureContainerName != "" && options.UpdateTemplates {
+		missing := validateMissingAzureOptions(options)
+		if missing != nil {
+			return fmt.Errorf("azure connection details are missing. Please provide %s", strings.Join(missing, ","))
+		}
+	}
+
+	// Verify that all GitLab options are provided if the GitLab server or token is provided
+	if options.GitLabToken != "" && options.UpdateTemplates {
+		missing := validateMissingGitLabOptions(options)
+		if missing != nil {
+			return fmt.Errorf("gitlab server details are missing. Please provide %s", strings.Join(missing, ","))
+		}
+	}
+
+	// verify that a valid ip version type was selected (4, 6)
+	if len(options.IPVersion) == 0 {
+		// add ipv4 as default
+		options.IPVersion = append(options.IPVersion, "4")
+	}
+	var useIPV4, useIPV6 bool
+	for _, ipv := range options.IPVersion {
+		switch ipv {
+		case "4":
+			useIPV4 = true
+		case "6":
+			useIPV6 = true
+		default:
+			return fmt.Errorf("unsupported ip version: %s", ipv)
+		}
+	}
+	if !useIPV4 && !useIPV6 {
+		return errors.New("ipv4 and/or ipv6 must be selected")
+	}
+
+	// Validate cloud option
+	if err := validateCloudOptions(options); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateCloudOptions(options *types.Options) error {
+	if options.HasCloudOptions() && !options.Cloud {
+		return errors.New("cloud flags cannot be used without cloud option")
+	}
+	if options.Cloud {
+		if options.CloudAPIKey == "" {
+			return errors.New("missing NUCLEI_CLOUD_API env variable")
+		}
+		var missing []string
+		switch options.AddDatasource {
+		case "s3":
+			missing = validateMissingS3Options(options)
+		case "github":
+			missing = validateMissingGithubOptions(options)
+		case "gitlab":
+			missing = validateMissingGitLabOptions(options)
+		case "azure":
+			missing = validateMissingAzureOptions(options)
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("missing %v env variables", strings.Join(missing, ", "))
+		}
+	}
+	return nil
+}
+
+func validateMissingS3Options(options *types.Options) []string {
+	var missing []string
+	if options.AwsBucketName == "" {
+		missing = append(missing, "AWS_TEMPLATE_BUCKET")
+	}
+	if options.AwsAccessKey == "" {
+		missing = append(missing, "AWS_ACCESS_KEY")
+	}
+	if options.AwsSecretKey == "" {
+		missing = append(missing, "AWS_SECRET_KEY")
+	}
+	if options.AwsRegion == "" {
+		missing = append(missing, "AWS_REGION")
+	}
+	return missing
+}
+
+func validateMissingAzureOptions(options *types.Options) []string {
+	var missing []string
+	if options.AzureTenantID == "" {
+		missing = append(missing, "AZURE_TENANT_ID")
+	}
+	if options.AzureClientID == "" {
+		missing = append(missing, "AZURE_CLIENT_ID")
+	}
+	if options.AzureClientSecret == "" {
+		missing = append(missing, "AZURE_CLIENT_SECRET")
+	}
+	if options.AzureServiceURL == "" {
+		missing = append(missing, "AZURE_SERVICE_URL")
+	}
+	if options.AzureContainerName == "" {
+		missing = append(missing, "AZURE_CONTAINER_NAME")
+	}
+	return missing
+}
+
+func validateMissingGithubOptions(options *types.Options) []string {
+	var missing []string
+	if options.GithubToken == "" {
+		missing = append(missing, "GITHUB_TOKEN")
+	}
+	if len(options.GithubTemplateRepo) == 0 {
+		missing = append(missing, "GITHUB_TEMPLATE_REPO")
+	}
+	return missing
+}
+
+func validateMissingGitLabOptions(options *types.Options) []string {
+	var missing []string
+	if options.GitLabToken == "" {
+		missing = append(missing, "GITLAB_TOKEN")
+	}
+	if len(options.GitLabTemplateRepositoryIDs) == 0 {
+		missing = append(missing, "GITLAB_REPOSITORY_IDS")
+	}
+
+	return missing
 }
 
 // configureOutput configures the output logging levels to be displayed on the screen
@@ -152,8 +284,7 @@ func configureOutput(options *types.Options) {
 	}
 
 	// disable standard logger (ref: https://github.com/golang/go/issues/19895)
-	log.SetFlags(0)
-	log.SetOutput(io.Discard)
+	logutil.DisableDefaultLogger()
 }
 
 // loadResolvers loads resolvers from both user provided flag and file
@@ -208,4 +339,56 @@ func validateCertificatePaths(certificatePaths []string) {
 			break
 		}
 	}
+}
+
+// Read the input from env and set options
+func readEnvInputVars(options *types.Options) {
+	if strings.EqualFold(os.Getenv("NUCLEI_CLOUD"), "true") {
+		options.Cloud = true
+	}
+	if options.CloudURL = os.Getenv("NUCLEI_CLOUD_SERVER"); options.CloudURL == "" {
+		options.CloudURL = "https://cloud-dev.nuclei.sh"
+	}
+	options.CloudAPIKey = os.Getenv("NUCLEI_CLOUD_API")
+
+	options.GithubToken = os.Getenv("GITHUB_TOKEN")
+	repolist := os.Getenv("GITHUB_TEMPLATE_REPO")
+	if repolist != "" {
+		options.GithubTemplateRepo = append(options.GithubTemplateRepo, stringsutil.SplitAny(repolist, ",")...)
+	}
+
+	// GitLab options for downloading templates from a repository
+	options.GitLabServerURL = os.Getenv("GITLAB_SERVER_URL")
+	if options.GitLabServerURL == "" {
+		options.GitLabServerURL = "https://gitlab.com"
+	}
+	options.GitLabToken = os.Getenv("GITLAB_TOKEN")
+	repolist = os.Getenv("GITLAB_REPOSITORY_IDS")
+	// Convert the comma separated list of repository IDs to a list of integers
+	if repolist != "" {
+		for _, repoID := range stringsutil.SplitAny(repolist, ",") {
+			// Attempt to convert the repo ID to an integer
+			repoIDInt, err := strconv.Atoi(repoID)
+			if err != nil {
+				gologger.Warning().Msgf("Invalid GitLab template repository ID: %s", repoID)
+				continue
+			}
+
+			// Add the int repository ID to the list
+			options.GitLabTemplateRepositoryIDs = append(options.GitLabTemplateRepositoryIDs, repoIDInt)
+		}
+	}
+
+	// AWS options for downloading templates from an S3 bucket
+	options.AwsAccessKey = os.Getenv("AWS_ACCESS_KEY")
+	options.AwsSecretKey = os.Getenv("AWS_SECRET_KEY")
+	options.AwsBucketName = os.Getenv("AWS_TEMPLATE_BUCKET")
+	options.AwsRegion = os.Getenv("AWS_REGION")
+
+	// Azure options for downloading templates from an Azure Blob Storage container
+	options.AzureContainerName = os.Getenv("AZURE_CONTAINER_NAME")
+	options.AzureTenantID = os.Getenv("AZURE_TENANT_ID")
+	options.AzureClientID = os.Getenv("AZURE_CLIENT_ID")
+	options.AzureClientSecret = os.Getenv("AZURE_CLIENT_SECRET")
+	options.AzureServiceURL = os.Getenv("AZURE_SERVICE_URL")
 }

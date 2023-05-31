@@ -3,35 +3,27 @@ package runner
 import (
 	"fmt"
 	"net"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 
-	"github.com/projectdiscovery/fileutil"
-	"github.com/projectdiscovery/goflags"
 	"github.com/projectdiscovery/nuclei/v2/pkg/catalog/config"
 	"github.com/projectdiscovery/nuclei/v2/pkg/types"
+	fileutil "github.com/projectdiscovery/utils/file"
 )
 
 // DoHealthCheck performs self-diagnostic checks
 func DoHealthCheck(options *types.Options) string {
 	// RW permissions on config file
-	cfgFilePath, _ := goflags.GetConfigFilePath()
-	cfgFileFolder := filepath.Dir(cfgFilePath)
 	var test strings.Builder
 	test.WriteString(fmt.Sprintf("Version: %s\n", config.Version))
-	test.WriteString(fmt.Sprintf("Operative System: %s\n", runtime.GOOS))
+	test.WriteString(fmt.Sprintf("Operating System: %s\n", runtime.GOOS))
 	test.WriteString(fmt.Sprintf("Architecture: %s\n", runtime.GOARCH))
 	test.WriteString(fmt.Sprintf("Go Version: %s\n", runtime.Version()))
 	test.WriteString(fmt.Sprintf("Compiler: %s\n", runtime.Compiler))
 
 	var testResult string
-
-	nucleiIgnorePath := filepath.Join(cfgFileFolder, ".nuclei-ignore")
-	homedir, _ := os.UserHomeDir()
-	nucleiTemplatePath := filepath.Join(homedir, "nuclei-templates/.checksum")
-	for _, filename := range []string{cfgFilePath, nucleiIgnorePath, nucleiTemplatePath} {
+	cfg := config.DefaultConfig
+	for _, filename := range []string{cfg.GetFlagsConfigFilePath(), cfg.GetIgnoreFilePath(), cfg.GetChecksumFilePath()} {
 		ok, err := fileutil.IsReadable(filename)
 		if ok {
 			testResult = "Ok"

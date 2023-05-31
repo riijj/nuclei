@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -8,19 +9,21 @@ import (
 	"os"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/julienschmidt/httprouter"
 	"github.com/logrusorgru/aurora"
 	"github.com/pkg/errors"
 	"github.com/projectdiscovery/goflags"
-	"github.com/projectdiscovery/nuclei/v2/pkg/catalog"
 	"github.com/projectdiscovery/nuclei/v2/pkg/catalog/config"
+	"github.com/projectdiscovery/nuclei/v2/pkg/catalog/disk"
 	"github.com/projectdiscovery/nuclei/v2/pkg/catalog/loader"
 	"github.com/projectdiscovery/nuclei/v2/pkg/core"
 	"github.com/projectdiscovery/nuclei/v2/pkg/core/inputs"
 	"github.com/projectdiscovery/nuclei/v2/pkg/output"
 	"github.com/projectdiscovery/nuclei/v2/pkg/parsers"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols"
+	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/contextargs"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/hosterrorscache"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/interactsh"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/protocolinit"
@@ -28,11 +31,12 @@ import (
 	"github.com/projectdiscovery/nuclei/v2/pkg/reporting"
 	"github.com/projectdiscovery/nuclei/v2/pkg/testutils"
 	"github.com/projectdiscovery/nuclei/v2/pkg/types"
-	"go.uber.org/ratelimit"
+	"github.com/projectdiscovery/ratelimit"
 )
 
 var codeTestcases = map[string]testutils.TestCase{
 	"code/test.yaml": &goIntegrationTest{},
+	"code/test.json": &goIntegrationTest{},
 }
 
 type goIntegrationTest struct{}
@@ -61,11 +65,14 @@ func (h *goIntegrationTest) Execute(templatePath string) error {
 
 // executeNucleiAsCode contains an example
 func executeNucleiAsCode(templatePath, templateURL string) ([]string, error) {
-	cache := hosterrorscache.New(30, hosterrorscache.DefaultMaxHostsCount)
+	cache := hosterrorscache.New(30, hosterrorscache.DefaultMaxHostsCount, nil)
 	defer cache.Close()
 
 	mockProgress := &testutils.MockProgressClient{}
-	reportingClient, _ := reporting.New(&reporting.Options{}, "")
+	reportingClient, err := reporting.New(&reporting.Options{}, "")
+	if err != nil {
+		return nil, err
+	}
 	defer reportingClient.Close()
 
 	outputWriter := testutils.NewMockOutputWriter()
@@ -78,10 +85,10 @@ func executeNucleiAsCode(templatePath, templateURL string) ([]string, error) {
 	_ = protocolstate.Init(defaultOpts)
 	_ = protocolinit.Init(defaultOpts)
 
-	defaultOpts.Templates = goflags.FileOriginalNormalizedStringSlice{templatePath}
+	defaultOpts.Templates = goflags.StringSlice{templatePath}
 	defaultOpts.ExcludeTags = config.ReadIgnoreFile().Tags
 
-	interactOpts := interactsh.NewDefaultOptions(outputWriter, reportingClient, mockProgress)
+	interactOpts := interactsh.DefaultOptions(outputWriter, reportingClient, mockProgress)
 	interactClient, err := interactsh.New(interactOpts)
 	if err != nil {
 		return nil, errors.Wrap(err, "could not create interact client")
@@ -89,14 +96,16 @@ func executeNucleiAsCode(templatePath, templateURL string) ([]string, error) {
 	defer interactClient.Close()
 
 	home, _ := os.UserHomeDir()
-	catalog := catalog.New(path.Join(home, "nuclei-templates"))
+	catalog := disk.NewCatalog(path.Join(home, "nuclei-templates"))
+	ratelimiter := ratelimit.New(context.Background(), 150, time.Second)
+	defer ratelimiter.Stop()
 	executerOpts := protocols.ExecuterOptions{
 		Output:          outputWriter,
 		Options:         defaultOpts,
 		Progress:        mockProgress,
 		Catalog:         catalog,
 		IssuesClient:    reportingClient,
-		RateLimiter:     ratelimit.New(150),
+		RateLimiter:     ratelimiter,
 		Interactsh:      interactClient,
 		HostErrorsCache: cache,
 		Colorizer:       aurora.NewAurora(true),
@@ -111,17 +120,13 @@ func executeNucleiAsCode(templatePath, templateURL string) ([]string, error) {
 	}
 	executerOpts.WorkflowLoader = workflowLoader
 
-	configObject, err := config.ReadConfiguration()
-	if err != nil {
-		return nil, errors.Wrap(err, "could not read configuration file")
-	}
-	store, err := loader.New(loader.NewConfig(defaultOpts, configObject, catalog, executerOpts))
+	store, err := loader.New(loader.NewConfig(defaultOpts, catalog, executerOpts))
 	if err != nil {
 		return nil, errors.Wrap(err, "could not create loader")
 	}
 	store.Load()
 
-	input := &inputs.SimpleInputProvider{Inputs: []string{templateURL}}
+	input := &inputs.SimpleInputProvider{Inputs: []*contextargs.MetaInput{{Input: templateURL}}}
 	_ = engine.Execute(store.Templates(), input)
 	engine.WorkPool().Wait() // Wait for the scan to finish
 

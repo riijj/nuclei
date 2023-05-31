@@ -6,7 +6,6 @@ package dedupe
 
 import (
 	"crypto/sha1"
-	"io/ioutil"
 	"os"
 	"reflect"
 	"unsafe"
@@ -30,7 +29,7 @@ func New(dbPath string) (*Storage, error) {
 
 	var err error
 	if dbPath == "" {
-		dbPath, err = ioutil.TempDir("", "nuclei-report-*")
+		dbPath, err = os.MkdirTemp("", "nuclei-report-*")
 		storage.temporary = dbPath
 	}
 	if err != nil {
@@ -50,6 +49,18 @@ func New(dbPath string) (*Storage, error) {
 		}
 	}
 	return storage, nil
+}
+
+func (s *Storage) Clear() {
+	var keys [][]byte
+	iter := s.storage.NewIterator(nil, nil)
+	for iter.Next() {
+		keys = append(keys, iter.Key())
+	}
+	iter.Release()
+	for _, key := range keys {
+		_ = s.storage.Delete(key, nil)
+	}
 }
 
 // Close closes the storage for further operations

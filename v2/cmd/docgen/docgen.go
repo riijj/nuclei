@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"io/ioutil"
 	"log"
 	"os"
 	"regexp"
@@ -22,7 +21,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("Could not encode docs: %s\n", err)
 	}
-	err = ioutil.WriteFile(os.Args[1], data, 0644)
+
+	if len(os.Args) < 3 {
+		log.Fatalf("syntax: %s md-docs-file jsonschema-file\n", os.Args[0])
+	}
+
+	err = os.WriteFile(os.Args[1], data, 0644)
 	if err != nil {
 		log.Fatalf("Could not write docs: %s\n", err)
 	}
@@ -44,7 +48,7 @@ func main() {
 	for _, match := range pathRegex.FindAllStringSubmatch(schema, -1) {
 		schema = strings.ReplaceAll(schema, match[0], match[1])
 	}
-	err = ioutil.WriteFile(os.Args[2], []byte(schema), 0644)
+	err = os.WriteFile(os.Args[2], []byte(schema), 0644)
 	if err != nil {
 		log.Fatalf("Could not write jsonschema: %s\n", err)
 	}

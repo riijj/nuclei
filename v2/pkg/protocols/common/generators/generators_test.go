@@ -5,14 +5,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/projectdiscovery/nuclei/v2/pkg/catalog"
+	"github.com/projectdiscovery/nuclei/v2/pkg/catalog/disk"
 )
 
 func TestBatteringRamGenerator(t *testing.T) {
 	usernames := []string{"admin", "password"}
 
-	catalogInstance := catalog.New("")
-	generator, err := New(map[string]interface{}{"username": usernames}, BatteringRamAttack, "", catalogInstance)
+	catalogInstance := disk.NewCatalog("")
+	generator, err := New(map[string]interface{}{"username": usernames}, BatteringRamAttack, "", false, catalogInstance, "")
 	require.Nil(t, err, "could not create generator")
 
 	iterator := generator.NewIterator()
@@ -31,8 +31,8 @@ func TestPitchforkGenerator(t *testing.T) {
 	usernames := []string{"admin", "token"}
 	passwords := []string{"password1", "password2", "password3"}
 
-	catalogInstance := catalog.New("")
-	generator, err := New(map[string]interface{}{"username": usernames, "password": passwords}, PitchForkAttack, "", catalogInstance)
+	catalogInstance := disk.NewCatalog("")
+	generator, err := New(map[string]interface{}{"username": usernames, "password": passwords}, PitchForkAttack, "", false, catalogInstance, "")
 	require.Nil(t, err, "could not create generator")
 
 	iterator := generator.NewIterator()
@@ -53,8 +53,8 @@ func TestClusterbombGenerator(t *testing.T) {
 	usernames := []string{"admin"}
 	passwords := []string{"admin", "password", "token"}
 
-	catalogInstance := catalog.New("")
-	generator, err := New(map[string]interface{}{"username": usernames, "password": passwords}, ClusterBombAttack, "", catalogInstance)
+	catalogInstance := disk.NewCatalog("")
+	generator, err := New(map[string]interface{}{"username": usernames, "password": passwords}, ClusterBombAttack, "", false, catalogInstance, "")
 	require.Nil(t, err, "could not create generator")
 
 	iterator := generator.NewIterator()

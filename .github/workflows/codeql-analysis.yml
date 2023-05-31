@@ -1,16 +1,16 @@
 name: 🚨 CodeQL Analysis
 
 on:
-  push:
   pull_request:
+    paths:
+      - '**.go'
+      - '**.mod'
   workflow_dispatch:
-    branches:
-      - dev
 
 jobs:
   analyze:
     name: Analyze
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-16-cores
     permissions:
       actions: read
       contents: read
